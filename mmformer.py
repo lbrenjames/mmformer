@@ -314,6 +314,7 @@ class MaskModal(nn.Module):
 class Model(nn.Module):
     def __init__(self, num_cls=4):
         super(Model, self).__init__()
+        
         self.flair_encoder = Encoder()
         self.t1ce_encoder = Encoder()
         self.t1_encoder = Encoder()
@@ -341,6 +342,7 @@ class Model(nn.Module):
         ########### IntraFormer
 
         ########### InterFormer
+        #
         self.multimodal_transformer = Transformer(embedding_dim=transformer_basic_dims, depth=depth, heads=num_heads, mlp_dim=mlp_dim, n_levels=num_modals)
         self.multimodal_decode_conv = nn.Conv3d(transformer_basic_dims*num_modals, basic_dims*16*num_modals, kernel_size=1, padding=0)
         ########### InterFormer
@@ -364,6 +366,9 @@ class Model(nn.Module):
         t2_x1, t2_x2, t2_x3, t2_x4, t2_x5 = self.t2_encoder(x[:, 3:4, :, :, :])
 
         ########### IntraFormer
+        #混合模态特定编码器，这部分旨在从每种模态中提取局部和全局上下文信息
+        #它首先通过卷积编码器生成具有局部上下文的紧凑特征图，
+        #然后利用内部模态Transformer（Intra-modal Transformer）来建立全局空间中的长程依赖关系。
         flair_token_x5 = self.flair_encode_conv(flair_x5).permute(0, 2, 3, 4, 1).contiguous().view(x.size(0), -1, transformer_basic_dims)
         t1ce_token_x5 = self.t1ce_encode_conv(t1ce_x5).permute(0, 2, 3, 4, 1).contiguous().view(x.size(0), -1, transformer_basic_dims)
         t1_token_x5 = self.t1_encode_conv(t1_x5).permute(0, 2, 3, 4, 1).contiguous().view(x.size(0), -1, transformer_basic_dims)
@@ -379,6 +384,7 @@ class Model(nn.Module):
         t1_intra_x5 = t1_intra_token_x5.view(x.size(0), patch_size, patch_size, patch_size, transformer_basic_dims).permute(0, 4, 1, 2, 3).contiguous()
         t2_intra_x5 = t2_intra_token_x5.view(x.size(0), patch_size, patch_size, patch_size, transformer_basic_dims).permute(0, 4, 1, 2, 3).contiguous()
 
+        #
         if self.is_training:
             flair_pred = self.decoder_sep(flair_x1, flair_x2, flair_x3, flair_x4, flair_x5)
             t1ce_pred = self.decoder_sep(t1ce_x1, t1ce_x2, t1ce_x3, t1ce_x4, t1ce_x5)
@@ -393,6 +399,8 @@ class Model(nn.Module):
         x5_intra = self.masker(torch.stack((flair_intra_x5, t1ce_intra_x5, t1_intra_x5, t2_intra_x5), dim=1), mask)
 
         ########### InterFormer
+        #这个编码器设计用于构建跨模态的长程相关性，从而得到与肿瘤区域相对应的全局语义特征
+        #它作为一个跨模态Transformer（Inter-modal Transformer）实现，处理来自所有模态特定编码器的嵌入
         flair_intra_x5, t1ce_intra_x5, t1_intra_x5, t2_intra_x5 = torch.chunk(x5_intra, num_modals, dim=1) 
         multimodal_token_x5 = torch.cat((flair_intra_x5.permute(0, 2, 3, 4, 1).contiguous().view(x.size(0), -1, transformer_basic_dims),
                                          t1ce_intra_x5.permute(0, 2, 3, 4, 1).contiguous().view(x.size(0), -1, transformer_basic_dims),
@@ -404,6 +412,9 @@ class Model(nn.Module):
         multimodal_inter_x5 = self.multimodal_decode_conv(multimodal_inter_token_x5.view(multimodal_inter_token_x5.size(0), patch_size, patch_size, patch_size, transformer_basic_dims*num_modals).permute(0, 4, 1, 2, 3).contiguous())
         x5_inter = multimodal_inter_x5
 
+        #fuse_pred是整个模型最终的输出，
+        #preds=(self.up2(pred1), self.up4(pred2), self.up8(pred3), self.up16(pred4))，是每层解码器的上采样输出
+        #(flair_pred, t1ce_pred, t1_pred, t2_pred)是
         fuse_pred, preds = self.decoder_fuse(x1, x2, x3, x4, x5_inter)
         ########### InterFormer
         
