@@ -16,6 +16,9 @@ class Encoder(nn.Module):
     def __init__(self):
         super(Encoder, self).__init__()
 
+        #通过多个卷积层逐级提取特征。每个卷积层都旨在捕获数据的局部上下文。
+        #每经过一个卷积阶段（如 self.e2_c1 到 self.e5_c3），特征图的尺寸会减半，而通道数会增加，这有助于模型逐渐捕获更抽象和复杂的特征。
+        #
         self.e1_c1 = nn.Conv3d(in_channels=1, out_channels=basic_dims, kernel_size=3, stride=1, padding=1, padding_mode='zeros', bias=True)
         self.e1_c2 = general_conv3d_prenorm(basic_dims, basic_dims, pad_type='zeros')
         self.e1_c3 = general_conv3d_prenorm(basic_dims, basic_dims, pad_type='zeros')
@@ -36,6 +39,7 @@ class Encoder(nn.Module):
         self.e5_c2 = general_conv3d_prenorm(basic_dims*16, basic_dims*16, pad_type='zeros')
         self.e5_c3 = general_conv3d_prenorm(basic_dims*16, basic_dims*16, pad_type='zeros')
 
+    #用于从特定模态中提取局部和全局上下文信息
     def forward(self, x):
         x1 = self.e1_c1(x)
         x1 = x1 + self.e1_c3(self.e1_c2(x1))
@@ -84,6 +88,7 @@ class Decoder_sep(nn.Module):
     def forward(self, x1, x2, x3, x4, x5):
         de_x5 = self.d4_c1(self.d4(x5))
 
+        #利用cat函数与相应的编码器层的输出进行拼接
         cat_x4 = torch.cat((de_x5, x4), dim=1)
         de_x4 = self.d4_out(self.d4_c2(cat_x4))
         de_x4 = self.d3_c1(self.d3(de_x4))
@@ -99,6 +104,7 @@ class Decoder_sep(nn.Module):
         cat_x1 = torch.cat((de_x2, x1), dim=1)
         de_x1 = self.d1_out(self.d1_c2(cat_x1))
 
+        #最终的分割预测，并将其转换成概率分布
         logits = self.seg_layer(de_x1)
         pred = self.softmax(logits)
 
@@ -142,7 +148,10 @@ class Decoder_fuse(nn.Module):
         self.RFM2 = fusion_prenorm(in_channel=basic_dims*2, num_cls=num_cls)
         self.RFM1 = fusion_prenorm(in_channel=basic_dims*1, num_cls=num_cls)
 
-
+    #输入包括编码器的五个不同层级的输出 (x1, x2, x3, x4, x5)。
+    #每个层级的输出首先通过相应的 RFM 模块进行处理，然后与上一个解码层的输出进行拼接。
+    #这些拼接后的输出通过卷积层和上采样层进一步处理，以重建更高分辨率的特征图。
+    #每个解码步骤都有一个分割预测输出，这些输出经过上采样以匹配原始图像尺寸。
     def forward(self, x1, x2, x3, x4, x5):
         de_x5 = self.RFM5(x5)
         pred4 = self.softmax(self.seg_d4(de_x5))
@@ -266,6 +275,8 @@ class FeedForward(nn.Module):
 
 
 class Transformer(nn.Module):
+    #embedding_dim：模型处理的每个元素的大小，depth：Transformer的层数，heads:多头注意力（Multi-head Attention）中“头”的数量
+    #mlp_dim:前馈网络的维度
     def __init__(self, embedding_dim, depth, heads, mlp_dim, dropout_rate=0.1, n_levels=1, n_points=4):
         super(Transformer, self).__init__()
         self.cross_attention_list = []
@@ -292,6 +303,7 @@ class Transformer(nn.Module):
 
 
     def forward(self, x, pos):
+    #重复堆叠多头自注意力和前馈网络
         for j in range(self.depth):
             x = x + pos
             x = self.cross_attention_list[j](x)
@@ -305,7 +317,10 @@ class MaskModal(nn.Module):
     
     def forward(self, x, mask):
         B, K, C, H, W, Z = x.size()
+        #创建了一个与 x 形状相同的零张量
         y = torch.zeros_like(x)
+        #它选择性地从输入张量 x 中复制那些掩码 mask 指定为 True 的元素到 y 中
+        #掩码 (mask) 的维度决定了它将如何应用于输入张量 (x)，由于mask是四维的，所以它会应用在x中的数量为4的模态维度
         y[mask, ...] = x[mask, ...]
         x = y.view(B, -1, H, W, Z)
         return x
@@ -327,14 +342,15 @@ class Model(nn.Module):
         self.t2_encode_conv = nn.Conv3d(basic_dims*16, transformer_basic_dims, kernel_size=1, stride=1, padding=0)
         self.flair_decode_conv = nn.Conv3d(transformer_basic_dims, basic_dims*16, kernel_size=1, stride=1, padding=0)
         self.t1ce_decode_conv = nn.Conv3d(transformer_basic_dims, basic_dims*16, kernel_size=1, stride=1, padding=0)
-        self.t1_decode_conv = nn.Conv3d(transformer_basic_dims, basic_dims*16, kernel_size=1, stride=1, padding=0)
+        self.t1_decode_conv = nn.Conv3d(transformer_basic_dims, basic_dims*16, kernel_size=1, stride=1, padding=0)  
         self.t2_decode_conv = nn.Conv3d(transformer_basic_dims, basic_dims*16, kernel_size=1, stride=1, padding=0)
 
+        #transformer的输入中可以学习的位置编码
         self.flair_pos = nn.Parameter(torch.zeros(1, patch_size**3, transformer_basic_dims))
         self.t1ce_pos = nn.Parameter(torch.zeros(1, patch_size**3, transformer_basic_dims))
         self.t1_pos = nn.Parameter(torch.zeros(1, patch_size**3, transformer_basic_dims))
         self.t2_pos = nn.Parameter(torch.zeros(1, patch_size**3, transformer_basic_dims))
-
+    
         self.flair_transformer = Transformer(embedding_dim=transformer_basic_dims, depth=depth, heads=num_heads, mlp_dim=mlp_dim)
         self.t1ce_transformer = Transformer(embedding_dim=transformer_basic_dims, depth=depth, heads=num_heads, mlp_dim=mlp_dim)
         self.t1_transformer = Transformer(embedding_dim=transformer_basic_dims, depth=depth, heads=num_heads, mlp_dim=mlp_dim)
@@ -349,7 +365,9 @@ class Model(nn.Module):
 
         self.masker = MaskModal()
 
+        #
         self.decoder_fuse = Decoder_fuse(num_cls=num_cls)
+        #每个模态单独用decoder输出分割结果
         self.decoder_sep = Decoder_sep(num_cls=num_cls)
 
         self.is_training = False
@@ -369,22 +387,29 @@ class Model(nn.Module):
         #混合模态特定编码器，这部分旨在从每种模态中提取局部和全局上下文信息
         #它首先通过卷积编码器生成具有局部上下文的紧凑特征图，
         #然后利用内部模态Transformer（Intra-modal Transformer）来建立全局空间中的长程依赖关系。
+        
+        #首先进行卷积操作，
+        #然后改变了数据的维度顺序[batch_size, channels, depth, height, width]->[batch_size, depth, height, width, channels]
+        #确保数据在内存中是连续排列的
+        #将数据重塑为一个三维张量。第一个维度是批处理大小（x.size(0)），第二个维度是由所有空间维度（深度、高度、宽度）展平得到的，第三个维度是变压器基本维数
         flair_token_x5 = self.flair_encode_conv(flair_x5).permute(0, 2, 3, 4, 1).contiguous().view(x.size(0), -1, transformer_basic_dims)
         t1ce_token_x5 = self.t1ce_encode_conv(t1ce_x5).permute(0, 2, 3, 4, 1).contiguous().view(x.size(0), -1, transformer_basic_dims)
         t1_token_x5 = self.t1_encode_conv(t1_x5).permute(0, 2, 3, 4, 1).contiguous().view(x.size(0), -1, transformer_basic_dims)
         t2_token_x5 = self.t2_encode_conv(t2_x5).permute(0, 2, 3, 4, 1).contiguous().view(x.size(0), -1, transformer_basic_dims)
 
+        #进行transformer操作
         flair_intra_token_x5 = self.flair_transformer(flair_token_x5, self.flair_pos)
         t1ce_intra_token_x5 = self.t1ce_transformer(t1ce_token_x5, self.t1ce_pos)
         t1_intra_token_x5 = self.t1_transformer(t1_token_x5, self.t1_pos)
         t2_intra_token_x5 = self.t2_transformer(t2_token_x5, self.t2_pos)
 
+        #将特征从一维序列重新塑形为三维数据块
         flair_intra_x5 = flair_intra_token_x5.view(x.size(0), patch_size, patch_size, patch_size, transformer_basic_dims).permute(0, 4, 1, 2, 3).contiguous()
         t1ce_intra_x5 = t1ce_intra_token_x5.view(x.size(0), patch_size, patch_size, patch_size, transformer_basic_dims).permute(0, 4, 1, 2, 3).contiguous()
         t1_intra_x5 = t1_intra_token_x5.view(x.size(0), patch_size, patch_size, patch_size, transformer_basic_dims).permute(0, 4, 1, 2, 3).contiguous()
         t2_intra_x5 = t2_intra_token_x5.view(x.size(0), patch_size, patch_size, patch_size, transformer_basic_dims).permute(0, 4, 1, 2, 3).contiguous()
 
-        #
+        #使用共享的decoder分别预测
         if self.is_training:
             flair_pred = self.decoder_sep(flair_x1, flair_x2, flair_x3, flair_x4, flair_x5)
             t1ce_pred = self.decoder_sep(t1ce_x1, t1ce_x2, t1ce_x3, t1ce_x4, t1ce_x5)
@@ -392,6 +417,7 @@ class Model(nn.Module):
             t2_pred = self.decoder_sep(t2_x1, t2_x2, t2_x3, t2_x4, t2_x5)
         ########### IntraFormer
 
+        #对编码器不同阶段的图像特征进行模态mask
         x1 = self.masker(torch.stack((flair_x1, t1ce_x1, t1_x1, t2_x1), dim=1), mask) #Bx4xCxHWZ
         x2 = self.masker(torch.stack((flair_x2, t1ce_x2, t1_x2, t2_x2), dim=1), mask)
         x3 = self.masker(torch.stack((flair_x3, t1ce_x3, t1_x3, t2_x3), dim=1), mask)
@@ -401,20 +427,29 @@ class Model(nn.Module):
         ########### InterFormer
         #这个编码器设计用于构建跨模态的长程相关性，从而得到与肿瘤区域相对应的全局语义特征
         #它作为一个跨模态Transformer（Inter-modal Transformer）实现，处理来自所有模态特定编码器的嵌入
+        
+        #在特定的维度上进行切分，把每个模态的特征分离开
         flair_intra_x5, t1ce_intra_x5, t1_intra_x5, t2_intra_x5 = torch.chunk(x5_intra, num_modals, dim=1) 
+        #对特征进行重构和连接
         multimodal_token_x5 = torch.cat((flair_intra_x5.permute(0, 2, 3, 4, 1).contiguous().view(x.size(0), -1, transformer_basic_dims),
                                          t1ce_intra_x5.permute(0, 2, 3, 4, 1).contiguous().view(x.size(0), -1, transformer_basic_dims),
                                          t1_intra_x5.permute(0, 2, 3, 4, 1).contiguous().view(x.size(0), -1, transformer_basic_dims),
                                          t2_intra_x5.permute(0, 2, 3, 4, 1).contiguous().view(x.size(0), -1, transformer_basic_dims),
                                         ), dim=1)
+        #位置编码的合并
         multimodal_pos = torch.cat((self.flair_pos, self.t1ce_pos, self.t1_pos, self.t2_pos), dim=1)
+        
+        #不同模态间的特征相互作用
+        #包括layer norm，self-attention，layer norm，FeedForward Network
         multimodal_inter_token_x5 = self.multimodal_transformer(multimodal_token_x5, multimodal_pos)
+        
+        #重构和卷积
         multimodal_inter_x5 = self.multimodal_decode_conv(multimodal_inter_token_x5.view(multimodal_inter_token_x5.size(0), patch_size, patch_size, patch_size, transformer_basic_dims*num_modals).permute(0, 4, 1, 2, 3).contiguous())
         x5_inter = multimodal_inter_x5
 
         #fuse_pred是整个模型最终的输出，
         #preds=(self.up2(pred1), self.up4(pred2), self.up8(pred3), self.up16(pred4))，是每层解码器的上采样输出
-        #(flair_pred, t1ce_pred, t1_pred, t2_pred)是
+        #(flair_pred, t1ce_pred, t1_pred, t2_pred)是每个模态单独的输出结果
         fuse_pred, preds = self.decoder_fuse(x1, x2, x3, x4, x5_inter)
         ########### InterFormer
         

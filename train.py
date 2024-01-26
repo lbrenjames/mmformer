@@ -45,8 +45,9 @@ path = os.path.dirname(__file__)
 ## parse arguments
 args = parser.parse_args()
 setup(args, 'training')
-#数据预处理
+#数据预处理的步骤
 args.train_transforms = 'Compose([RandCrop3D((128,128,128)), RandomRotion(10), RandomIntensityChange((0.1,0.1)), RandomFlip(0), NumpyType((np.float32, np.int64)),])'
+#将图像数据转换为np.float32类型，而将相关的标签或分割图数据转换为np.int64类型
 args.test_transforms = 'Compose([NumpyType((np.float32, np.int64)),])'
 
 #指定模型训练过程中的所有检查点和相关数据的保存路径
